@@ -1,14 +1,88 @@
-"""Шаблоны имён файлов (без зависимости от Qt).
+"""File names: reading tags back from names, recognizing random names, cleaning image text, and name templates.
 
-Переменные:  {original} {meaningful} {text} {description} {tags}
-  {meaningful}      исходное имя, но только если оно осмысленное ('bunny karate'; а '00IoBi56ZE8' -> пусто)
-  {a|b|c}           первое непустое из переменных
-  {text:40}         максимум 40 символов (для {tags:3} — первые 3 тега)
-  <  - {text}>      необязательная группа: исчезает целиком, если любая переменная внутри пустая
-Расширение файла добавляется автоматически. Пустые [] и () удаляются."""
+Template variables:  {original} {meaningful} {text} {description} {tags}
+  {meaningful}      the original name, but only if it means something ('bunny karate'; '00IoBi56ZE8' -> empty)
+  {a|b|c}           first non-empty of several variables
+  {text:40}         at most 40 characters ({tags:3}: the first 3 tags)
+  <  - {text}>      optional group: dropped entirely when any variable inside is empty
+The extension is added automatically. Empty [] and () are removed."""
 from __future__ import annotations
 import re
-from .organizer import clean_name_text, looks_random
+from .tags import squash as _squash
+
+_SUFFIX = re.compile(r"\s*\[([^\[\]]*)\](?:\s*\(\d+\))?\s*$")   # also accepts the " (2)" added on name collisions
+
+
+def split_name(stem: str) -> tuple[str, list[str]]:
+    """'cat lol [anime k-on]' -> ('cat lol', ['anime', 'k-on'])"""
+    m = _SUFFIX.search(stem)
+    if not m:
+        return stem, []
+    return stem[:m.start()], [t for t in m.group(1).split() if t]
+
+
+def build_filename(base: str, tags, ext: str) -> str:
+    """'' base -> the name is just the tags: '[anime k-on].jpg'. Keeps the name within 240 bytes, dropping tags if needed."""
+    n = lambda s: len(s.encode())
+    base = base.strip()
+    while n(base) > 120:
+        base = base[:-1]
+    tags = list(tags)
+    while tags:
+        name = f"{base} [{' '.join(tags)}]" if base else f"[{' '.join(tags)}]"
+        if n(name) + n(ext) <= 240:
+            return name + ext
+        tags.pop()
+    return (base or "image") + ext
+
+
+_GENERIC = {"image", "images", "img", "original", "unnamed", "tenor", "giphy", "sticker", "screenshot", "maxresdefault",
+            "superthumb", "index", "download", "video", "photo", "file", "untitled", "pic", "picture", "default"}
+_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def _id_like(tok: str) -> bool:
+    return (len(tok) in (11, 15, 16) and re.fullmatch(r"[A-Za-z0-9_-]+", tok) is not None and
+            (bool(re.search(r"\d", tok) and re.search(r"[A-Za-z]", tok)) or bool(re.search(r"[a-z][A-Z]", tok))))
+
+
+def looks_random(base: str) -> bool:
+    """True for names like 00IoBi56ZE8, F7_c1kIWsAAEucE, photo_2024-01-01_12-00, UUIDs, hashes, 'Image'."""
+    b = (base or "").strip()
+    if not b:
+        return True
+    low = b.lower()
+    if low in _GENERIC or re.sub(r"[\s_\-().]*\d*$", "", low) in _GENERIC:
+        return True
+    if re.fullmatch(r"[\W_]*\d[\d\W_]*", b) or _UUID.search(low):
+        return True
+    if re.search(r"(?=[0-9a-f]*\d)[0-9a-f]{10,}", low) or low.startswith("ezgif"):
+        return True
+    if re.match(r"(photo|video|doc|img|pxl|screenshot|image)[_\- ]*\d", low):
+        return True
+    if _id_like(b) or any(_id_like(t) for t in re.split(r"[\s_]+", b)):
+        return True
+    if re.fullmatch(r"[a-z0-9]{12,14}", b) and sum(c.isdigit() for c in b) >= 3 and sum(c.isalpha() for c in b) >= 3:
+        return True                                      # Reddit-style id: 9gwumjr5x5831
+    alnum = [c for c in b if c.isalnum()]
+    return not alnum or sum(c.isalpha() for c in alnum) / len(alnum) <= 0.5
+
+
+_URL = re.compile(r"(https?://\S+|www\.\S+|\b\S+\.(?:com|ru|net|org|io|ua|me|gg|tv)\b\S*)", re.I)
+_DROP_CHARS = re.compile(r'[*?"<>]')                     # dropped: "What?!" -> "What!"
+_SPACE_CHARS = re.compile(r'[\\/:|\[\]\x00-\x1f]')         # replaced with a space
+
+
+def clean_name_text(s: str, max_chars: int = 60) -> str:
+    """Image text -> safe part of a file name: no links, @handles, brackets or forbidden characters; long text is cut
+    at a word boundary."""
+    s = _URL.sub(" ", s or "")
+    s = re.sub(r"(^|\s)@\w+", " ", s)
+    s = re.sub(r"\s+", " ", _SPACE_CHARS.sub(" ", _DROP_CHARS.sub("", s))).strip(" .-_,")
+    if len(s) > max_chars:
+        cut = s[:max_chars]; sp = cut.rfind(" ")
+        s = (cut[:sp] if sp >= max_chars * 0.5 else cut).strip(" .,-_")
+    return s
 
 VARS = ("original", "meaningful", "text", "description", "tags")
 DEFAULT_TEMPLATE = "{original} [{tags}]"
@@ -27,9 +101,6 @@ _VAR = re.compile(r"\{([^{}]*)\}")
 _GROUP = re.compile(r"<([^<>]*)>")
 _UNSAFE = re.compile(r"[\\/\x00-\x1f]")
 
-
-def _squash(s: str) -> str:
-    return re.sub(r"[\W_]+", "", (s or "").lower())
 
 
 def _parse_spec(spec: str):
