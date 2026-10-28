@@ -1,0 +1,62 @@
+# vocab-version: 3
+# tag | CLIP prompt | optional min probability.   [group] = mutually exclusive labels, ~name = distractor (never a tag).
+# Edit freely: ~/.config/memetagger/vocab.txt. If this header version is older than the app's, the file is replaced (old one -> vocab.txt.bak).
+
+[medium]
+anime | an anime screenshot or anime-style illustration
+manga | a black and white manga page
+cartoon | a western cartoon character
+comic | a multi-panel comic strip
+pixel_art | pixel art
+3d_render | a 3d render
+photo | a real photograph
+
+[format]
+screenshot | a screenshot of an app or website
+chat | a screenshot of a chat conversation or social media post
+text_meme | a meme with large caption text at the top and bottom
+reaction | a close-up of a face making a reaction
+
+[animals]
+cat | a photo of a cat
+dog | a photo of a dog
+doge | the doge meme: a shiba inu dog with comic sans text | 0.5
+bunny | a rabbit or bunny
+frog | a frog
+pepe | pepe the frog meme | 0.4
+capybara | a capybara
+bird | a bird
+bear | a bear
+monkey | a monkey
+horse | a horse
+fish | a fish
+
+[]
+wojak | a wojak or soyjak drawing | 0.4
+baby | a baby
+food | food on a plate
+car | a car
+game | a video game screenshot
+minecraft | a minecraft screenshot | 0.4
+programming | source code on a screen
+linux | the linux tux penguin logo | 0.4
+computer | a computer or laptop
+politics | politicians or political propaganda
+war | soldiers, tanks or military
+space | outer space, planets or an astronaut
+movie_still | a still frame from a movie
+robot | a robot
+music | musical instruments or a concert
+sports | a sports game
+selfie | a selfie
+landscape | a landscape or nature scenery
+
+# distractors: absorb probability when nothing from the lists above is really present
+~person | a photo of a person
+~object | a photo of an everyday object
+~scene | a photo of a room or a street
+~abstract | an abstract pattern or texture
+~plain_text | plain text on a plain background
+~logo | a logo or icon
+~meme_template | a popular meme template
+~other | something else

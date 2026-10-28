@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=MemeTagger
+Comment=Local AI tagging and sorting of memes
+Exec=memetagger %F
+Icon=memetagger
+Categories=Graphics;Utility;
+Terminal=false

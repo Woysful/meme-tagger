@@ -1,0 +1,114 @@
+{
+ "_comment": "тег -> дополнительные теги (родительские). Нужно, чтобы персонажи попадали в папку своей франшизы.",
+ "hirasawa_yui": [
+  "k-on"
+ ],
+ "akiyama_mio": [
+  "k-on"
+ ],
+ "tainaka_ritsu": [
+  "k-on"
+ ],
+ "kotobuki_tsumugi": [
+  "k-on"
+ ],
+ "nakano_azusa": [
+  "k-on"
+ ],
+ "rabbit": [
+  "bunny"
+ ],
+ "rabbit_ears": [
+  "bunny"
+ ],
+ "bunny_girl": [
+  "bunny"
+ ],
+ "bunnysuit": [
+  "bunny"
+ ],
+ "hirasawa_ui": [
+  "k-on"
+ ],
+ "manabe_nodoka": [
+  "k-on"
+ ],
+ "yamanaka_sawako": [
+  "k-on"
+ ],
+ "suzuki_jun": [
+  "k-on"
+ ],
+ "hakurei_reimu": [
+  "touhou"
+ ],
+ "kirisame_marisa": [
+  "touhou"
+ ],
+ "cirno": [
+  "touhou"
+ ],
+ "remilia_scarlet": [
+  "touhou"
+ ],
+ "flandre_scarlet": [
+  "touhou"
+ ],
+ "izayoi_sakuya": [
+  "touhou"
+ ],
+ "reisen_udongein_inaba": [
+  "touhou"
+ ],
+ "reimu": [
+  "touhou"
+ ],
+ "marisa": [
+  "touhou"
+ ],
+ "aigis": [
+  "persona"
+ ],
+ "aegis": [
+  "persona"
+ ],
+ "kujikawa_rise": [
+  "persona"
+ ],
+ "morgana": [
+  "persona"
+ ],
+ "elizabeth": [
+  "persona"
+ ],
+ "paimon": [
+  "genshin_impact"
+ ],
+ "mercy": [
+  "overwatch"
+ ],
+ "osaka": [
+  "azumanga_daioh"
+ ],
+ "neco-arc": [
+  "tsukihime"
+ ],
+ "neco_arc": [
+  "tsukihime"
+ ],
+ "giorno_giovanna": [
+  "jojo"
+ ],
+ "son_goku": [
+  "dragon_ball"
+ ],
+ "goku": [
+  "dragon_ball"
+ ],
+ "cell": [
+  "dragon_ball"
+ ],
+ "asuka_langley_soryu": [
+  "evangelion"
+ ]
+}

@@ -1,0 +1,6 @@
+PySide6>=6.6
+onnxruntime>=1.17
+numpy
+Pillow
+tokenizers
+rapidocr
