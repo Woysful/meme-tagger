@@ -1,28 +1,19 @@
-"""OCR текста на мемах через RapidOCR (onnxruntime, CPU). Кириллица + латиница (модель PP-OCRv5 cyrillic).
-Результат кэшируется по содержимому файла."""
+"""OCR of meme text with RapidOCR (onnxruntime, CPU): PP-OCRv5 Cyrillic+Latin model. Results are cached by file content."""
 from __future__ import annotations
-import hashlib, json, threading
+import json
+import threading
 from pathlib import Path
 from PIL import Image, ImageDraw
-from .models import user_data_dir
+from .paths import user_data_dir
 
 
 class OcrUnavailable(RuntimeError):
     pass
 
 
-def _prep(path, max_side=2000):
-    import numpy as np
-    im = Image.open(path).convert("RGBA")
-    bg = Image.new("RGBA", im.size, (255, 255, 255, 255)); bg.alpha_composite(im)
-    im = bg.convert("RGB")
-    if max(im.size) > max_side:
-        im.thumbnail((max_side, max_side), Image.LANCZOS)
-    return np.ascontiguousarray(np.asarray(im)[:, :, ::-1])         # RGB -> BGR (как ждёт OpenCV-пайплайн)
-
-
 def _warmup_image():
-    im = Image.new("RGB", (260, 70), "white"); ImageDraw.Draw(im).text((10, 25), "Test 123", fill="black")
+    im = Image.new("RGB", (260, 70), "white")
+    ImageDraw.Draw(im).text((10, 25), "Test 123", fill="black")
     return im
 
 
@@ -35,8 +26,9 @@ class OcrReader:
         except (OSError, ValueError):
             self.cache = {}
         self.lang = "custom"
-        if engine is not None:                      # для тестов
-            self.engine = engine; return
+        if engine is not None:
+            self.engine = engine
+            return
         self.engine, self.lang = self._create(progress or (lambda m: None))
 
     @staticmethod
@@ -48,11 +40,6 @@ class OcrReader:
         import numpy as np
         probe = np.asarray(_warmup_image())[:, :, ::-1].copy()
         cyr = getattr(LangRec, "CYRILLIC", None)
-        if cyr is None:
-            try:
-                cyr = LangRec("cyrillic")
-            except Exception:
-                cyr = None
         attempts = []
         if cyr is not None:
             attempts.append(("cyrillic+latin", {
@@ -66,28 +53,21 @@ class OcrReader:
             try:
                 progress(f"Loading OCR ({name})…")
                 eng = RapidOCR(params=params) if params else RapidOCR()
-                eng(probe)                          # в версиях >= 3.10 модели грузятся при первом вызове
+                eng(probe)                          # models are loaded lazily on the first call
                 if params is None:
                     progress("Cyrillic OCR model unavailable: Russian/Ukrainian text will be read poorly")
                 return eng, name
-            except Exception as e:                  # скачивание/несовместимость — пробуем следующий вариант
+            except Exception as e:
                 last = e
         raise OcrUnavailable(f"OCR failed to start: {last}")
 
-    @staticmethod
-    def _key(path) -> str:
-        h = hashlib.sha1()
-        with open(path, "rb") as f:
-            for chunk in iter(lambda: f.read(1 << 20), b""):
-                h.update(chunk)
-        return h.hexdigest()
-
-    def read(self, path, min_score=0.5, max_chars=500) -> str:
-        key = self._key(path)
+    def read(self, image, min_score=0.5, max_chars=500) -> str:
+        """image: ImageData (see imaging.py)."""
+        key = image.sha1
         with self.lock:
             if key in self.cache:
                 return self.cache[key]
-        res = self.engine(_prep(path))
+        res = self.engine(image.bgr())
         txts, scores = getattr(res, "txts", None) or (), getattr(res, "scores", None) or ()
         text = " ".join(t.strip() for t, s in zip(txts, scores) if s >= min_score and t.strip())[:max_chars]
         with self.lock:
@@ -98,7 +78,9 @@ class OcrReader:
 
     def _flush_locked(self):
         try:
-            self.cache_path.write_text(json.dumps(self.cache, ensure_ascii=False), "utf-8"); self.dirty = 0
+            tmp = self.cache_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self.cache, ensure_ascii=False), "utf-8")
+            tmp.replace(self.cache_path); self.dirty = 0
         except OSError:
             pass
 
@@ -108,7 +90,5 @@ class OcrReader:
                 self._flush_locked()
 
 
-if __name__ == "__main__":      # python -m memetagger.ocr --warmup  (скачивает модели; вызывается при сборке AppImage)
-    import sys
-    r = OcrReader(print)
-    print("OCR ready:", r.lang)
+if __name__ == "__main__":      # python -m memetagger.ocr  (downloads the models; used by the AppImage build)
+    print("OCR ready:", OcrReader(print).lang)
