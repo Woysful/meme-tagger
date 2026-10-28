@@ -1,93 +1,64 @@
 # MemeTagger
 
-Локальный тегер и сортировщик мем-библиотеки. Vision-модель в Ollama (GPU) пишет теги, текст с картинки и описание сцены;
-WD14 EVA02-Large распознаёт аниме-персонажей; база Danbooru (~24 тыс. персонажей) приводит имена к одному написанию и
-знает франшизу каждого персонажа. Файлы получают имена вида `оригинал [anime k-on hirasawa_yui].jpg` и раскладываются
-по папкам `k-on/hirasawa_yui/`.
+Local AI tagger and organizer for a meme library. A vision model in Ollama writes tags, the text on the image and a
+scene description. A WD tagger recognizes anime characters, and a Danbooru database (~24k characters) normalizes their
+names and adds the franchise. Files are renamed to `name [anime k-on hirasawa_yui].jpg` and sorted into folders like
+`k-on/hirasawa_yui/`.
 
-## Установка
+## Install
 ```
-pip install -r requirements.txt          # CPU
-# NVIDIA: вместо onnxruntime поставьте  pip install 'onnxruntime-gpu[cuda,cudnn]'  (не оба пакета сразу)
-sudo pacman -S ollama-cuda && sudo systemctl enable --now ollama
-ollama pull qwen3-vl:8b                  # ~6 GB, помещается в 12 GB вместе с WD14
-python run.py [файлы/папки]
+pip install -r requirements.txt     # NVIDIA: use onnxruntime-gpu[cuda,cudnn] instead of onnxruntime
+ollama pull qwen3-vl:8b             # ~6 GB, fits in 12 GB VRAM together with the WD tagger
+python run.py [files/folders]
 ```
-Модели WD14 и CLIP скачиваются с Hugging Face при первом запуске. AppImage: `./build_appimage.sh`
-(`BUNDLE_MODELS=1 WD_MODEL=eva02-large ./build_appimage.sh` кладёт модели внутрь). Для Qt 6 на целевой системе может
-понадобиться `libxcb-cursor0`.
+WD and CLIP models are downloaded from Hugging Face on first use. AppImage: `./build_appimage.sh`
+(`BUNDLE_MODELS=1 WD_MODEL=eva02-large` puts the models inside).
 
-## Как получаются теги
-1. **Подготовка** (CPU/GPU, идёт заранее для следующей картинки, пока модель отвечает по текущей): картинка
-   декодируется один раз, OCR (RapidOCR) читает текст, WD14 выдаёт кандидатов в персонажи с вероятностями.
-2. **Vision-модель** получает картинку, кандидатов WD14 с вероятностями, осмысленное исходное имя файла, текст OCR и
-   подсказки из имён папок. Отвечает JSON: франшиза и персонажи с уверенностью high/medium/low, формат мема, предметы, темы.
-3. **Сведение** (`fusion.py`): имена персонажей нормализуются по базе Danbooru (`yui hirasawa` → `hirasawa_yui`,
-   франшиза добавляется сама). Догадка подтверждается WD14, текстом на картинке, папкой или персонажем франшизы.
-   Неподтверждённые догадки по правилам строгости (Lenient / Balanced / Strict) принимаются, перепроверяются одним
-   коротким запросом на все сомнения картинки или отбрасываются. Сильный кандидат WD14 (≥ 0.85) на рисованной картинке
-   принимается и без согласия модели. Квоты по видам тегов не дают темам вытеснить персонажей.
-4. **Словарь** (`tagstore.py`) хранит написания, виды тегов и связи персонаж → франшиза. Счётчики растут только при Apply,
-   поэтому результаты текущей сессии не подкрепляют сами себя.
+## How tagging works
+1. **Prepare**: the image is decoded once; OCR reads its text; the WD tagger proposes characters with probabilities.
+   This runs ahead for the next image while the vision model works on the current one.
+2. **Vision model**: gets the image, WD candidates, OCR text, the file name and folder hints, and returns franchise,
+   characters (with confidence), meme format, subjects and themes.
+3. **Fusion**: names are normalized via Danbooru (`yui hirasawa` → `hirasawa_yui`). Guesses are confirmed by WD, OCR
+   text or folders; unconfirmed ones are kept, double-checked or dropped depending on Strictness.
+4. **Vocabulary**: spellings, tag kinds and character → franchise links. Counts grow only on Apply.
 
-Почему у файла такие теги, видно в превью («Why these tags?») и в отчёте отладки:
-`python -m memetagger.debug ~/test_images --out report.md` (сравнение моделей: `--models qwen3-vl:8b,gemma3:12b`;
-также `--strictness`, `--wd-model`, `--wd-device`, `--no-tags/--no-text/--no-description`).
+"Why these tags?" in the preview explains each decision. Batch report:
+`python -m memetagger.debug ~/memes --out report.md` (`--models a,b` compares models).
 
-## Свои модели
-**Vision-модель.** В поле Model можно вписать любую модель Ollama, в том числе GGUF прямо с Hugging Face:
-`hf.co/<owner>/<repo>:Q4_K_M` (кнопка «Download» делает `ollama pull`). Модель должна уметь принимать картинки
-(vision); текстовые модели скрываются из списка. Свой GGUF с диска подключается через `Modelfile` и `ollama create`.
+## Custom models
+- **Vision model**: any Ollama vision model, including GGUF from Hugging Face: `hf.co/owner/repo:Q4_K_M`.
+- **Character model**: built-in WD v3 (EVA02, ViT, SwinV2) and PixAI v1.0 (8k characters). Or choose
+  "Custom model…" and enter a Hugging Face repo (`owner/repo`, or `owner/repo:file.onnx`) or a local folder.
 
-**Распознавание персонажей.** Character recognition → Model → «Custom model…», затем одно из:
-- `owner/repo` — репозиторий Hugging Face; если ONNX-файлов несколько, укажите нужный: `owner/repo:model_fp16.onnx`;
-- путь к папке (кнопка «…») или к конкретному `.onnx` файлу.
+Custom character models must be ONNX taggers in the WD format: `.onnx` + `selected_tags.csv` (Danbooru categories:
+4 = character, 3 = copyright). Input layout is detected; an optional `preprocess.json` sets size, padding and
+normalization. Gated repos need `HF_TOKEN`. PyTorch-only repos (e.g. `pixai-labs/pixai-tagger-v1.0`) do not run;
+the error message lists compatible ONNX versions.
 
-Подходит любой тегер в формате WD: ONNX-модель + `selected_tags.csv` с колонками `name` и `category`
-(категории Danbooru: 0 — общие, 3 — копирайт, 4 — персонажи). Раскладка входа (NHWC/NCHW) и размер определяются по
-модели; для NCHW по умолчанию RGB, 0..1, mean/std 0.5. Необязательный `preprocess.json` задаёт размер, цвет полей и
-нормализацию. Внешние веса (`model.onnx.data`) скачиваются вместе с моделью. Закрытые/gated репозитории: переменная
-окружения `HF_TOKEN`. Файлы кладутся в `~/.local/share/memetagger/models/custom/`. Пример — PixAI Tagger v1.0
-(8 тыс. персонажей): `Mexes/pixai-tagger-v1.0-onnx-fp32-fp16-int8:model_fp16.onnx` (≈1 GB, для GPU).
-В отладке: `python -m memetagger.debug ~/memes --wd-model owner/repo --out report.md`.
-## Папки
-Настройки → Library → Folders. Уровни задаются видами тегов: `franchise > character` (по умолчанию),
-`franchise|meme_format > character`, `medium > franchise > character` или пусто (только переименование).
-- Папка появляется, когда в ней набирается N картинок (по умолчанию 3); уже существующая папка используется всегда.
-- Файлы, которые уже лежат в библиотеке и чьи теги не изменились, не трогаются. Опция «Move older files into a folder
-  once it appears» собирает в новую папку файлы, ждавшие в родительской.
-- Ваши собственные папки сохраняются: файл не вытаскивается из `Смешное/` в корень. Исключение: папка-тег, к которой
-  файл больше не относится.
-- Темы (cat, war…) папками не становятся, их ищут поиском или по метаданным.
+## Folders
+Settings → Library → Folders. Levels are tag kinds: `franchise > character` (default), `medium > franchise >
+character`, or empty (rename only).
+- A folder is created once N images share it (default 3); existing folders are always used.
+- Files already in the library are left alone unless their tags change. Your own folders are kept.
+- Theme tags (cat, war…) never become folders.
 
-## Метаданные
-Теги, их виды, текст и описание пишутся в XMP (`dc:subject`, `lr:hierarchicalSubject`, `dc:description`, `dc:title`):
-прямо в JPEG/PNG/WebP, через exiftool для других форматов, иначе в sidecar `файл.xmp`. Их видят digiKam,
-Dolphin/Baloo, Lightroom. При повторном добавлении файла виды тегов восстанавливаются.
+## Metadata
+Tags, kinds, text and description are written as XMP into JPEG/PNG/WebP, via exiftool for other formats, or to a
+`.xmp` sidecar. Readable by digiKam, Dolphin/Baloo and Lightroom.
 
-## Интерфейс
-- Таблица со статусом каждой строки (в очереди / анализ / готово / ошибка / изменено / применено), теги цветными
-  чипами по видам, фильтры (без тегов, ошибки, изменённые, будут перемещены) и поиск (Ctrl+F).
-- Превью: большая картинка, чипы тегов (✕ удалить, правый клик меняет вид), ввод тегов с автодополнением по вашему
-  словарю и базе персонажей, кнопки кандидатов WD14 («+ akiyama_mio · k-on · 42%»), текст, описание, новое место.
-  Если выделено несколько файлов, новые теги добавляются всем.
-- Библиотека тегов: все теги с видом и числом файлов. Переименование и слияние (`yui_hirasawa` + `hirasawa_yui`),
-  смена вида и удаление, по желанию сразу в файлах библиотеки (с записью в журнал Undo).
-- Undo отменяет последний Apply, включая правки из библиотеки тегов.
-- Большие папки сканируются в фоне: строки появляются партиями, в строке состояния виден счётчик найденных файлов,
-  «Stop» прерывает импорт.
+## Interface
+- Table with per-file status, colored tag chips, filters and search (Ctrl+F). Large folders import in the background.
+- Preview with tag chips, autocomplete and WD candidates; tags added with several files selected go to all of them.
+- Tag library: rename, merge, change kind or delete tags, optionally in library files too.
+- Undo reverts the last Apply.
 
-## Конфигурация
-`~/.config/memetagger/`: `folder_hints.json` (папка → теги), `seed_tags.txt` (`тег` или `тег | вид`),
-`aliases.json`, `vocab.txt` (классический движок CLIP). Шаблоны по умолчанию лежат в `memetagger/data/`.
-Данные: `~/.local/share/memetagger/` (модели, словарь `tag_memory.json`, журнал отмены, кэш OCR).
-Базу персонажей пересобирает `python tools/build_chardb.py`.
+## Files
+- Config: `~/.config/memetagger/` (`folder_hints.json`, `seed_tags.txt`, `aliases.json`, `vocab.txt`).
+- Data: `~/.local/share/memetagger/` (models, `tag_memory.json`, undo journal, OCR cache).
+- Character database: `python tools/build_chardb.py`.
 
-## Разработка
+## Development
 ```
 QT_QPA_PLATFORM=offscreen python -m pytest -q tests
 ```
-Модули: `tags`/`tagstore` (теги и словарь), `characters` (база Danbooru), `wd14`, `ocr`, `vlm` (Ollama), `fusion`
-(решения по тегам), `engine` (конвейер), `naming`/`organizer` (имена, папки, Apply/Undo), `metadata` (XMP),
-`ui/` (окно: `main`, `model`, `preview`, `settings`, `library`, `workers`, `widgets`), `theme` (цвета, контраст
-проверяется тестами).
