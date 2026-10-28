@@ -1,14 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
-import os
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_all
 
-# Bundled models: run `python -m memetagger.models models/ [wd-model]` first.
 datas = [('memetagger/data', 'memetagger/data')]
-if os.path.isdir('models'):
-    datas.append(('models', 'models'))
 binaries = []
-# Every memetagger module (including the memetagger.ui package), even ones static analysis misses.
-hiddenimports = collect_submodules('memetagger')
+hiddenimports = []
+hiddenimports += collect_submodules('memetagger')
 tmp_ret = collect_all('rapidocr')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
