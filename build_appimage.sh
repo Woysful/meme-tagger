@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Сборка MemeTagger-x86_64.AppImage. Нужен интернет (pip + appimagetool).
 # Собирайте на не слишком новом дистрибутиве (напр. Ubuntu 22.04) — тогда AppImage запустится почти везде.
-#   BUNDLE_MODELS=1 ./build_appimage.sh   — вшить модели (~600 МБ, работает полностью офлайн с 1-го запуска)
+#   BUNDLE_MODELS=1 ./build_appimage.sh   — вшить модели (~1.5 ГБ с EVA02-Large, работает офлайн с 1-го запуска)
+#   BUNDLE_MODELS=1 WD_MODEL=<имя> ./build_appimage.sh   — другая WD-модель (см. WD_MODELS в memetagger/models.py)
 set -euo pipefail
 cd "$(dirname "$0")"
 python3 -m venv .venv && . .venv/bin/activate
@@ -9,7 +10,7 @@ pip install -U pip && pip install -r requirements.txt pyinstaller
 
 EXTRA=()
 if [ "${BUNDLE_MODELS:-0}" = 1 ]; then
-  python -m memetagger.models models
+  python -m memetagger.models models/ ${WD_MODEL:-}
   EXTRA+=(--add-data "models:models")
 fi
 
@@ -17,10 +18,8 @@ fi
 python -m memetagger.ocr || echo "WARNING: OCR warm-up failed, OCR will be disabled in the AppImage"
 
 pyinstaller --noconfirm --clean --windowed --name memetagger --collect-all rapidocr \
-  --add-data "memetagger/folder_hints_default.json:memetagger" \
-  --add-data "memetagger/seed_tags_default.txt:memetagger" \
-  --add-data "memetagger/vocab_default.txt:memetagger" \
-  --add-data "memetagger/aliases_default.json:memetagger" \
+  --collect-submodules memetagger \
+  --add-data "memetagger/data:memetagger/data" \
   "${EXTRA[@]}" run.py
 
 rm -rf AppDir && mkdir -p AppDir/usr/bin

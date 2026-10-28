@@ -1,80 +1,75 @@
 # MemeTagger
-Локальный тегер мемов: CLIP (общие понятия) + WD14 (персонажи/франшизы) через onnxruntime.
-Файлы получают имя `оригинал [anime k-on hirasawa_yui].jpg`, а когда тегов набирается >= порога — раскладываются
-по вложенным папкам (`anime/k-on/hirasawa_yui/…`).
 
-Запуск из исходников: `pip install -r requirements.txt && python run.py [файлы/папки]`
-Сборка AppImage: `./build_appimage.sh` (или `BUNDLE_MODELS=1 ./build_appimage.sh`)
-Тесты логики: `python tests/test_organizer.py`
-Настройки словаря: `~/.config/memetagger/vocab.txt`, алиасы: `~/.config/memetagger/aliases.json`
-На целевой системе для Qt 6 может понадобиться `libxcb-cursor0`.
+Локальный тегер и сортировщик мем-библиотеки. Vision-модель в Ollama (GPU) пишет теги, текст с картинки и описание сцены;
+WD14 EVA02-Large распознаёт аниме-персонажей; база Danbooru (~24 тыс. персонажей) приводит имена к одному написанию и
+знает франшизу каждого персонажа. Файлы получают имена вида `оригинал [anime k-on hirasawa_yui].jpg` и раскладываются
+по папкам `k-on/hirasawa_yui/`.
 
-Tuning tags: `python -m memetagger.debug some_meme.jpg` prints CLIP probabilities per label,
-then adjust `~/.config/memetagger/vocab.txt` (groups, `~distractors`, per-label min probability).
-
-## Best quality: local vision model via Ollama (GPU)
-Memes are text- and franchise-heavy, so the main engine is a multimodal LLM that runs on your GPU:
+## Установка
 ```
+pip install -r requirements.txt          # CPU
+# NVIDIA: вместо onnxruntime поставьте  pip install 'onnxruntime-gpu[cuda,cudnn]'  (не оба пакета сразу)
 sudo pacman -S ollama-cuda && sudo systemctl enable --now ollama
-ollama pull qwen3-vl:8b        # ~6 GB, fits a 12 GB card; check `ollama ps` shows 100% GPU
+ollama pull qwen3-vl:8b                  # ~6 GB, помещается в 12 GB вместе с WD14
+python run.py [файлы/папки]
 ```
-The app (Engine: Auto) uses it when reachable, otherwise falls back to CLIP+WD14. WD14 additionally feeds character
-hints into the prompt. `tag_memory.json` keeps spellings consistent (re_zero / rezero / re-zero -> one tag) and is
-sent to the model as the "existing vocabulary".
+Модели WD14 и CLIP скачиваются с Hugging Face при первом запуске. AppImage: `./build_appimage.sh`
+(`BUNDLE_MODELS=1 WD_MODEL=eva02-large ./build_appimage.sh` кладёт модели внутрь). Для Qt 6 на целевой системе может
+понадобиться `libxcb-cursor0`.
 
-Evaluate on a folder and save a report:
-`python -m memetagger.debug ~/test_images --out report.md`
-Tests: `python tests/test_organizer.py && python tests/test_vlm.py`
+## Как получаются теги
+1. **Подготовка** (CPU/GPU, идёт заранее для следующей картинки, пока модель отвечает по текущей): картинка
+   декодируется один раз, OCR (RapidOCR) читает текст, WD14 выдаёт кандидатов в персонажи с вероятностями.
+2. **Vision-модель** получает картинку, кандидатов WD14 с вероятностями, осмысленное исходное имя файла, текст OCR и
+   подсказки из имён папок. Отвечает JSON: франшиза и персонажи с уверенностью high/medium/low, формат мема, предметы, темы.
+3. **Сведение** (`fusion.py`): имена персонажей нормализуются по базе Danbooru (`yui hirasawa` → `hirasawa_yui`,
+   франшиза добавляется сама). Догадка подтверждается WD14, текстом на картинке, папкой или персонажем франшизы.
+   Неподтверждённые догадки по правилам строгости (Lenient / Balanced / Strict) принимаются, перепроверяются одним
+   коротким запросом на все сомнения картинки или отбрасываются. Сильный кандидат WD14 (≥ 0.85) на рисованной картинке
+   принимается и без согласия модели. Квоты по видам тегов не дают темам вытеснить персонажей.
+4. **Словарь** (`tagstore.py`) хранит написания, виды тегов и связи персонаж → франшиза. Счётчики растут только при Apply,
+   поэтому результаты текущей сессии не подкрепляют сами себя.
 
-Compare several vision models on your own images (Ollama swaps them in and out of VRAM):
-`python -m memetagger.debug ~/test_images --models qwen3-vl:8b,gemma3:12b,minicpm-v4.5 --out compare.md`
+Почему у файла такие теги, видно в превью («Why these tags?») и в отчёте отладки:
+`python -m memetagger.debug ~/test_images --out report.md` (сравнение моделей: `--models qwen3-vl:8b,gemma3:12b`;
+также `--strictness`, `--wd-model`, `--wd-device`, `--no-tags/--no-text/--no-description`).
 
-## Context, OCR and verification
-- **Folder hints** (`~/.config/memetagger/folder_hints.json`): folder name -> tags. Files from `Destiny/`, `Gensh/`, `HTT/`... get
-  those tags and the model is told about them. Edit the file to match your own folder names.
-- **File-name hint**: meaningful original names ("bunny karate", "persona 4 its peak") are passed to the model; random ones
-  (`00IoBi56ZE8`, `F7_c1kIWsAAEucE`, `photo_2024-...`, hashes) are detected and ignored.
-- **OCR** (RapidOCR, PP-OCRv5 cyrillic+latin, CPU): text read from the image is given to the model as a hint. Results are cached
-  by file content. `pip install rapidocr` (models download on first use; the build script pre-downloads them for the AppImage).
-- **Verification**: franchise/character guesses not supported by WD14, folder, file name, OCR or your tag history get one short
-  yes/no/unsure query to the same model; only "yes" survives. Dropped guesses are listed in the row tooltip / debug report.
-- **Seed vocabulary** (`seed_tags.txt`) keeps spellings consistent from the first image.
-- Rename option: "replace original name with tags" + "keep meaningful original names".
+## Папки
+Настройки → Library → Folders. Уровни задаются видами тегов: `franchise > character` (по умолчанию),
+`franchise|meme_format > character`, `medium > franchise > character` или пусто (только переименование).
+- Папка появляется, когда в ней набирается N картинок (по умолчанию 3); уже существующая папка используется всегда.
+- Файлы, которые уже лежат в библиотеке и чьи теги не изменились, не трогаются. Опция «Move older files into a folder
+  once it appears» собирает в новую папку файлы, ждавшие в родительской.
+- Ваши собственные папки сохраняются: файл не вытаскивается из `Смешное/` в корень. Исключение: папка-тег, к которой
+  файл больше не относится.
+- Темы (cat, war…) папками не становятся, их ищут поиском или по метаданным.
 
-## Interface
-Header badge shows whether Ollama is reachable; the model box is filled from `/api/tags` (vision-capable models only, via `/api/show`
-capabilities) and ⟳ refreshes it; the GPU line shows what `ollama ps` would (warns if the model spilled to CPU).
-Toolbar: Pause / Resume / Stop / Re-analyze, filter, ⚙ Config (opens the config folder or a config file, "Reload configuration"),
-Undo, Apply. Tests of the controller logic run on a Qt stub: `python tests/test_gui_logic.py`.
+## Метаданные
+Теги, их виды, текст и описание пишутся в XMP (`dc:subject`, `lr:hierarchicalSubject`, `dc:description`, `dc:title`):
+прямо в JPEG/PNG/WebP, через exiftool для других форматов, иначе в sidecar `файл.xmp`. Их видят digiKam,
+Dolphin/Baloo, Lightroom. При повторном добавлении файла виды тегов восстанавливаются.
 
-## Theme / contrast
-`memetagger/theme.py` defines explicit light and dark colour tokens (no system palette roles, which made tabs and borders vanish on
-some desktop themes). "Theme: system" only picks light or dark. `python tests/test_theme.py` checks WCAG contrast of all
-text/background and border/background pairs, so low-contrast regressions fail the tests.
+## Интерфейс
+- Таблица со статусом каждой строки (в очереди / анализ / готово / ошибка / изменено / применено), теги цветными
+  чипами по видам, фильтры (без тегов, ошибки, изменённые, будут перемещены) и поиск (Ctrl+F).
+- Превью: большая картинка, чипы тегов (✕ удалить, правый клик меняет вид), ввод тегов с автодополнением по вашему
+  словарю и базе персонажей, кнопки кандидатов WD14 («+ akiyama_mio · k-on · 42%»), текст, описание, новое место.
+  Если выделено несколько файлов, новые теги добавляются всем.
+- Библиотека тегов: все теги с видом и числом файлов. Переименование и слияние (`yui_hirasawa` + `hirasawa_yui`),
+  смена вида и удаление, по желанию сразу в файлах библиотеки (с записью в журнал Undo).
+- Undo отменяет последний Apply, включая правки из библиотеки тегов.
 
-## File name templates and scene description
-Naming tab -> "Template". Variables: `{original}` `{meaningful}` (original name only if it looks meaningful) `{text}` (text read from
-the image; short texts verbatim, long ones summarized by the AI) `{description}` (one or two sentences describing the scene, written
-by the vision model) `{tags}`. Also: fallback `{text|description|original}` (first non-empty), limits `{text:40}` / `{tags:3}`,
-optional parts `< - {text}>` (dropped when a variable inside is empty). The extension is added automatically; empty `[]`/`()` are
-removed; long names are shortened (text/description first, tags last). Presets fill the field; edit it freely.
-Keep `[{tags}]` at the end: that is how tags are read back from file names (folder grouping, skipping analyzed files) - the UI warns
-if the template breaks this. The table has editable "Text on the image" and "Scene description" columns. Description language: English,
-Russian or Ukrainian (tags stay English). The description needs the vision model; the classic engine leaves it empty.
-Tests: `python tests/test_template.py`.
+## Конфигурация
+`~/.config/memetagger/`: `folder_hints.json` (папка → теги), `seed_tags.txt` (`тег` или `тег | вид`),
+`aliases.json`, `vocab.txt` (классический движок CLIP). Шаблоны по умолчанию лежат в `memetagger/data/`.
+Данные: `~/.local/share/memetagger/` (модели, словарь `tag_memory.json`, журнал отмены, кэш OCR).
+Базу персонажей пересобирает `python tools/build_chardb.py`.
 
-## Generation switches (Engine tab -> Generate)
-Tags / Text from the image / Scene description can be turned off independently. Unneeded work is skipped, not just hidden:
-- **Tags off**: no WD14 character hints, no verification queries, no tag vocabulary in the prompt, shorter answer; CLIP/WD14 are not even loaded.
-- **Text off**: no `name_text` field; OCR is skipped too unless tags still use it as a hint.
-- **Description off**: shorter answer. Description only: OCR is skipped as well.
-Values of switched-off items already in the table are kept. "Skip files that already have [tags]" applies while tags are generated.
-CLI: `python -m memetagger.debug DIR --no-tags --no-text --no-description`.
-
-## Model management, lengths, settings
-- **Model management** (Engine tab): "Pull model" downloads the model named in the Model box (progress, cancel; a cancelled download resumes next time),
-  "Unload from memory" is `ollama stop` for the selected model and the models this app used. The option "Unload the model from memory when closing
-  the app" (on by default) unloads only models used in this session; errors never block closing.
-- **Lengths**: "Ask the model to respect these lengths" turns the character limits into a word target for the model (no character counting, no
-  line wrapping) plus a generous hard cap in the answer schema (`maxLength`, silently dropped if the server rejects it). Off: free answer, trimmed only in the file name.
-- **Settings** are saved automatically when changed (debounced) and on exit (`~/.config/memetagger/memetagger.conf`), including window geometry, splitter and tab.
+## Разработка
+```
+QT_QPA_PLATFORM=offscreen python -m pytest -q tests
+```
+Модули: `tags`/`tagstore` (теги и словарь), `characters` (база Danbooru), `wd14`, `ocr`, `vlm` (Ollama), `fusion`
+(решения по тегам), `engine` (конвейер), `naming`/`organizer` (имена, папки, Apply/Undo), `metadata` (XMP),
+`ui/` (окно: `main`, `model`, `preview`, `settings`, `library`, `workers`, `widgets`), `theme` (цвета, контраст
+проверяется тестами).

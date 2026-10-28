@@ -1,6 +1,8 @@
 PySide6>=6.6
-onnxruntime>=1.17
-numpy
 Pillow
+numpy
+# CPU inference. For an NVIDIA GPU install onnxruntime-gpu[cuda,cudnn] instead of this line (never both:
+# the two packages overwrite each other's files).
+onnxruntime>=1.17
 tokenizers
 rapidocr
