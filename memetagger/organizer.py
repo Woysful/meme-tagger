@@ -262,7 +262,9 @@ def execute(plan: Plan, journal_dir: Path, progress=None) -> tuple[int, list[str
         except (OSError, metadata.MetadataError) as e:
             errors.append(f"{m.src.name}: {e}")
     journal_dir.mkdir(parents=True, exist_ok=True)
-    (journal_dir / f"journal-{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns() % 10**6:06d}.json").write_text(
+    ns = time.time_ns()                 # one timestamp, so names sort in Apply order even within the same second
+    stamp = time.strftime('%Y%m%d-%H%M%S', time.localtime(ns // 10**9))
+    (journal_dir / f"journal-{stamp}-{ns % 10**9:09d}.json").write_text(
         json.dumps({"roots": [str(r) for r in plan.roots], "ops": ops}))
     _prune([Path(op["src"]).parent for op in ops if not op["copy"]], plan.roots)
     return done, errors
