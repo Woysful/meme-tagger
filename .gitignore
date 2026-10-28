@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+build/
+dist/
+AppDir/
+appimagetool
+*.AppImage
+models/
+.venv/
+*.part
