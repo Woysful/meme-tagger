@@ -46,22 +46,34 @@ def blend(fg_rgba: str, bg: str) -> str:
     return "#%02x%02x%02x" % (mix(r, br), mix(g, bg_), mix(b, bb))
 
 
-def make_check_icon(path: Path) -> str:
-    """Белая «галочка» 16x16 для отмеченных чекбоксов (рисуется один раз)."""
+def _draw_icon(path: Path, points, color: str, width: int) -> str:
+    """Line icon drawn at 4x and downscaled (antialiased); drawn once per color."""
     try:
         if not path.exists():
             from PIL import Image, ImageDraw
             path.parent.mkdir(parents=True, exist_ok=True)
             big = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-            ImageDraw.Draw(big).line([(14, 34), (26, 46), (50, 18)], fill=(255, 255, 255, 255), width=9, joint="curve")
+            ImageDraw.Draw(big).line(points, fill=_rgb(color) + (255,), width=width, joint="curve")
             big.resize((16, 16), Image.LANCZOS).save(path)
         return str(path).replace("\\", "/")
     except Exception:
         return ""
 
 
-def build_style(t: dict, check_icon: str = "") -> str:
-    tick = f'image: url("{check_icon}");' if check_icon else ""
+def make_icons(folder: Path, t: dict) -> dict[str, str]:
+    """Checkbox tick and chevrons for combo/spin boxes in the colors of theme t: name -> file path ('' on failure)."""
+    down, up = [(14, 24), (32, 42), (50, 24)], [(14, 40), (32, 22), (50, 40)]
+    icons = {"check": _draw_icon(folder / "check.png", [(14, 34), (26, 46), (50, 18)], "#ffffff", 9)}
+    for state, color in (("", t["muted"]), ("hover", t["accent"]), ("disabled", t["disabled"])):
+        for name, pts in (("down", down), ("up", up)):
+            icons[name + ("_" + state if state else "")] = _draw_icon(folder / f"{name}-{color.lstrip('#')}.png", pts, color, 7)
+    return icons
+
+
+def build_style(t: dict, icons: dict | None = None) -> str:
+    icons = icons or {}
+    img = lambda name: f'image: url("{icons[name]}");' if icons.get(name) else ""
+    tick = img("check")
     return f"""
 * {{ font-size: 13px; }}
 QMainWindow, QDialog, QMessageBox {{ background: {t['window']}; }}
@@ -97,6 +109,28 @@ QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{ padding: 5px 8px; border: 1px 
     background: {t['input']}; color: {t['text']}; selection-background-color: {t['accent']}; selection-color: {t['on_accent']}; }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {{ border: 1px solid {t['accent']}; }}
 QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {{ color: {t['disabled']}; }}
+QComboBox {{ padding-right: 26px; }}
+QLineEdit:hover, QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover {{ border-color: {t['accent']}; }}
+QComboBox::drop-down {{ subcontrol-origin: border; subcontrol-position: top right; width: 24px; margin: 1px;
+    border: none; border-top-right-radius: 5px; border-bottom-right-radius: 5px; background: transparent; }}
+QComboBox::drop-down:hover, QComboBox::drop-down:on {{ background: {t['hover']}; }}
+QComboBox::down-arrow {{ {img('down')} width: 10px; height: 10px; }}
+QComboBox::down-arrow:hover, QComboBox::down-arrow:on {{ {img('down_hover')} }}
+QComboBox::down-arrow:disabled {{ {img('down_disabled')} }}
+QSpinBox, QDoubleSpinBox {{ padding-right: 24px; }}
+QSpinBox::up-button, QDoubleSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::down-button {{
+    subcontrol-origin: border; width: 22px; margin: 1px; border: none; background: transparent; }}
+QSpinBox::up-button, QDoubleSpinBox::up-button {{ subcontrol-position: top right; border-top-right-radius: 5px; }}
+QSpinBox::down-button, QDoubleSpinBox::down-button {{ subcontrol-position: bottom right; border-bottom-right-radius: 5px; }}
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover, QSpinBox::down-button:hover,
+    QDoubleSpinBox::down-button:hover {{ background: {t['hover']}; }}
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{ {img('up')} width: 9px; height: 9px; }}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{ {img('down')} width: 9px; height: 9px; }}
+QSpinBox::up-arrow:disabled, QDoubleSpinBox::up-arrow:disabled, QSpinBox::up-arrow:off,
+    QDoubleSpinBox::up-arrow:off {{ {img('up_disabled')} }}
+QSpinBox::down-arrow:disabled, QDoubleSpinBox::down-arrow:disabled, QSpinBox::down-arrow:off,
+    QDoubleSpinBox::down-arrow:off {{ {img('down_disabled')} }}
+QLabel:disabled {{ color: {t['disabled']}; }}
 QComboBox QAbstractItemView {{ background: {t['card']}; color: {t['text']}; border: 1px solid {t['border']}; outline: 0;
     selection-background-color: {t['accent']}; selection-color: {t['on_accent']}; }}
 QMenu {{ background: {t['card']}; color: {t['text']}; border: 1px solid {t['border']}; padding: 6px; }}

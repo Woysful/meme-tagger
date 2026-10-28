@@ -22,8 +22,8 @@ from .model import (C_DESC, C_DEST, C_FILE, C_STATUS, C_TAGS, C_TEXT, C_THUMB, F
                     RowFilter)
 from .preview import PreviewPanel
 from .settings import SettingsPanel
-from .widgets import TagsDelegate
-from .workers import AnalysisWorker, Job, PullWorker, drop_engine
+from .widgets import TagsDelegate, ThumbDelegate
+from .workers import AnalysisWorker, ImportWorker, Job, PullWorker, drop_engine
 
 IMAGE_FILTER = "Images (*.jpg *.jpeg *.png *.webp *.gif *.bmp *.tif *.tiff *.avif *.jfif)"
 REPLAN_KEYS = {"out", "copy", "levels", "min_count", "gather", "template", "text_max", "desc_max", "metadata"}
@@ -39,6 +39,9 @@ class Main(QMainWindow):
         self.engine_factory = engine_factory
         self.tasks = TaskRunner()
         self.worker: AnalysisWorker | None = None
+        self.importer: ImportWorker | None = None
+        self.import_added = 0
+        self._known: set = set()
         self.puller: PullWorker | None = None
         self.queue: list[Job] = []
         self.installed: dict = {}
@@ -166,10 +169,12 @@ class Main(QMainWindow):
         self.stack = QStackedWidget()
         drop = QLabel("Drop images or folders here\n\nor use “Add files” / “Add folder”")
         drop.setObjectName("drop"); drop.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.drop_label, self.drop_text = drop, drop.text()
         holder = QWidget(); hl = QVBoxLayout(holder); hl.setContentsMargins(40, 40, 40, 40); hl.addWidget(drop)
         t = self.table = QTableView()
         t.setModel(self.proxy)
         t.setItemDelegateForColumn(C_TAGS, TagsDelegate(self.tag_words, t))
+        t.setItemDelegateForColumn(C_THUMB, ThumbDelegate(t))
         t.setIconSize(QSize(72, 72)); t.verticalHeader().setDefaultSectionSize(84); t.verticalHeader().hide()
         t.setShowGrid(False); t.setAlternatingRowColors(True); t.setWordWrap(True)
         t.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -206,6 +211,7 @@ class Main(QMainWindow):
         p.pull_btn.clicked.connect(self.toggle_pull)
         p.unload_btn.clicked.connect(self.unload_model)
         p.out_btn.clicked.connect(self.pick_out)
+        p.wd_custom_btn.clicked.connect(self.pick_wd_folder)
         p.library_btn.clicked.connect(self.open_library)
         for name, btn in p.config_btns.items():
             btn.clicked.connect(lambda _=False, n=name: self.open_path(config_file(n)))
@@ -269,7 +275,7 @@ class Main(QMainWindow):
 
     def engine_config(self) -> EngineConfig:
         return EngineConfig(mode=self.s.get("engine"), host=self.s.get("host"), model=self.s.get("model"),
-                            ocr=self.s.get("ocr"), wd=self.s.get("wd"), wd_model=self.s.get("wd_model"),
+                            ocr=self.s.get("ocr"), wd=self.s.get("wd"), wd_model=self.panel.wd_spec(),
                             wd_device=self.s.get("wd_device"), want_tags="tags" in self.want())
 
     def tag_options(self) -> TagOptions:
@@ -421,6 +427,11 @@ class Main(QMainWindow):
         if d:
             self.panel.out.setText(d)
 
+    def pick_wd_folder(self, *_):
+        d = QFileDialog.getExistingDirectory(self, "Folder with model.onnx and selected_tags.csv", self.s.get("wd_custom"))
+        if d:
+            self.panel.wd_custom.setText(d); self.s.set("wd_custom", d)
+
     def dragEnterEvent(self, e):
         if e.mimeData().hasUrls():
             e.acceptProposedAction()
@@ -429,13 +440,36 @@ class Main(QMainWindow):
         self.add_paths([u.toLocalFile() for u in e.mimeData().urls() if u.isLocalFile()])
 
     def add_paths(self, paths):
-        known = {r.item.src for r in self.model.rows}
-        new = [it for it in org.collect(paths, read_meta=self.s.get("metadata") != "off") if it.src not in known]
-        if not new:
+        """Folders are scanned in the background: the window stays responsive and rows appear in batches."""
+        paths = [str(p) for p in paths if p]
+        if not paths:
             return
+        if self.importer is not None:
+            self.importer.add(paths); return
         if self.worker is None and not self.queue:
             self.prog_total = self.prog_done = 0
         self.stopped = False
+        self.import_added = 0
+        self._known = {r.item.src for r in self.model.rows}
+        self._start_import(paths)
+
+    def _start_import(self, paths):
+        w = self.importer = ImportWorker(paths, read_meta=self.s.get("metadata") != "off")
+        w.batch.connect(self.add_items)
+        w.progress.connect(self.on_import_progress)
+        w.finished.connect(self.on_import_finished)
+        w.start()
+        self.update_controls(); self.update_progress()
+
+    def add_items(self, items):
+        w = self.sender()
+        if w is not self.importer or w.isInterruptionRequested():     # in flight from an import that was cleared or stopped
+            return
+        new = [it for it in items if it.src not in self._known]
+        if not new:
+            return
+        self._known.update(it.src for it in new)
+        self.import_added += len(new)
         ban, skip = self.banned(), self.s.get("skip") and "tags" in self.want()
         rows, jobs = [], []
         for it in new:
@@ -451,6 +485,27 @@ class Main(QMainWindow):
         self.update_controls()
         self.replan_timer.start()
 
+    def on_import_progress(self, found, folder):
+        if self.importer is not None:
+            self.update_progress()
+
+    def on_import_finished(self):
+        w = self.sender()
+        if w is None or w is not self.importer:          # cleared: clear() has already waited for it
+            return
+        self.importer = None
+        w.wait()
+        cancelled = w.isInterruptionRequested()
+        rest = [] if cancelled else w.leftover()
+        if rest:                                         # added right when the scan was finishing
+            self._start_import(rest); return
+        self.update_controls(); self.update_progress()
+        self.replan_timer.start()
+        if self.worker is None:
+            if self.import_added or cancelled:
+                self.show_summary()
+            else:
+                self.info.setText("No new images found")
     # ---------- analysis ----------
     def enqueue(self, jobs: list[Job]):
         self.prog_total += sum(j.analyze for j in jobs)
@@ -483,13 +538,14 @@ class Main(QMainWindow):
         w, self.worker = self.worker, None
         if w is not None:
             w.wait()
-            for rid in [j.rid for j in w._jobs]:          # stopped: the rest goes back to "not analyzed"
-                if (r := self.model.row(rid)) is not None and r.status == "queued":
-                    r.status = "idle"; self.model.refresh(rid)
+            waiting = {j.rid for j in self.queue}         # stopped: the rest goes back to "not analyzed"
+            for r in self.model.rows:
+                if r.status in ("queued", "analyzing") and r.id not in waiting:
+                    r.status = "idle"; self.model.refresh(r.id)
         self.ps_timer.stop(); self.poll_ps(); self.eta_label.setText("")
         self.start_worker(); self.update_controls(); self.update_progress()
         self.replan_timer.start()
-        if self.worker is None:
+        if self.worker is None and self.importer is None:
             self.show_summary()
 
     def on_row_started(self, rid):
@@ -562,8 +618,10 @@ class Main(QMainWindow):
         self.update_controls(); self.update_progress()
 
     def stop_analysis(self, *_):
-        if self.worker is None and not self.queue:
+        if self.worker is None and not self.queue and self.importer is None:
             return
+        if self.importer is not None:
+            self.importer.cancel()
         for j in self.queue:
             if (r := self.model.row(j.rid)) is not None and r.status == "queued":
                 r.status = "idle"
@@ -590,7 +648,7 @@ class Main(QMainWindow):
     def update_controls(self):
         running = self.worker is not None
         paused = running and self.worker.is_paused()
-        busy = running or bool(self.queue)
+        busy = running or bool(self.queue) or self.importer is not None
         self.pause_btn.setText("▶ Resume" if paused else "⏸ Pause")
         self.pause_btn.setEnabled(running)
         self.stop_btn.setEnabled(busy)
@@ -599,14 +657,19 @@ class Main(QMainWindow):
         self.clear_btn.setEnabled(bool(self.model.rows))
         self.panel.unload_btn.setEnabled(not running)
         self.stack.setCurrentIndex(1 if self.model.rows else 0)
+        self.drop_label.setText("Looking for images…" if self.importer is not None else self.drop_text)
         self.preview_card.setVisible(bool(self.model.rows))
 
     def update_progress(self):
+        importing = f"Importing: {self.importer.found} files found…" if self.importer is not None else ""
         total = max(self.prog_total, 1); done = min(self.prog_done, total)
+        if importing and (self.worker is None or not self.prog_total):
+            self.progress.setRange(0, 0); self.info.setText(importing); return     # busy indicator
         self.progress.setRange(0, total); self.progress.setValue(done)
         if self.worker is not None:
             paused = self.worker.is_paused()
-            self.info.setText(f"{'Paused' if paused else 'Analyzing'}: {done} of {self.prog_total}")
+            self.info.setText(f"{'Paused' if paused else 'Analyzing'}: {done} of {self.prog_total}"
+                              + (f" · {importing}" if importing else ""))
             left = self.prog_total - self.prog_done
             self.eta_label.setText("" if paused or self.avg_dt is None or left <= 0 else f"about {fmt_eta(self.avg_dt * left)} left")
 
@@ -726,6 +789,9 @@ class Main(QMainWindow):
         self.model.refresh(); self.show_current(); self.replan_timer.start()
 
     def clear(self, *_):
+        if self.importer is not None:
+            w, self.importer = self.importer, None
+            w.cancel(); w.wait()
         self.queue.clear()
         if self.worker is not None:
             self.worker.cancel(); self.worker.wait()
@@ -781,12 +847,12 @@ class Main(QMainWindow):
         if cur is not None:
             self.preview.dest.setText(cur.dest)
         self.panel.update_template()
-        if self.worker is None:
+        if self.worker is None and self.importer is None:
             self.show_summary()
 
     # ---------- apply / undo ----------
     def apply(self, *_):
-        if not self.model.rows or self.worker is not None:
+        if not self.model.rows or self.worker is not None or self.importer is not None:
             return
         plan = self.make_plan()
         ops = plan.operations
@@ -893,6 +959,8 @@ class Main(QMainWindow):
         self.ps_timer.stop(); self.replan_timer.stop()
         if self.puller is not None:
             self.puller.cancel(); self.puller.wait(3000)
+        if self.importer is not None:
+            self.importer.cancel(); self.importer.wait(5000)
         if self.worker is not None:
             self.worker.cancel(); self.worker.wait(5000)
         self.tasks.wait_all(3000)

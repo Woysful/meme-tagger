@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from .characters import CharacterDB, default_db
 from .fusion import Evidence, Fusion, Policy
 from .imaging import ImageData
-from .models import DEFAULT_WD
+from .models import DEFAULT_WD, WD_MODELS, ModelError
 from .naming import clean_name_text, looks_random
 from .paths import config_file
 from .tags import KINDS, MEDIUMS, Tag, clean_tag
@@ -159,7 +159,10 @@ class Engine:
                 self._wd = shared(key, lambda: Wd14(self.cfg.wd_model, self.cfg.wd_device, self.progress, self.db))
                 self.progress(f"Character recognizer on {self._wd.device}")
             except Exception as e:
-                self._wd_failed = True; self.progress(f"WD14 disabled: {e}")
+                self._wd_failed = True
+                if self.cfg.wd_model not in WD_MODELS:          # a model the user picked: say why it does not work
+                    raise ModelError(f"Custom character model “{self.cfg.wd_model}”: {e}") from e
+                self.progress(f"WD14 disabled: {e}")
         return self._wd
 
     def classic(self):

@@ -1,5 +1,6 @@
 """Main window with real Qt (offscreen) and a fake analysis engine: queue, statuses, editing, plan, apply, undo."""
 import os
+import threading
 import time
 from pathlib import Path
 import pytest
@@ -88,7 +89,7 @@ def window(qapp, tmp_path, answers=None, **settings):
 
 
 def idle(w):
-    return w.worker is None and not w.queue
+    return w.worker is None and not w.queue and w.importer is None
 
 
 def test_analysis_statuses_and_plan(qapp, tmp_path):
@@ -177,6 +178,8 @@ def test_tag_library_rename_in_files(qapp, tmp_path):
 def test_stop_and_pause(qapp, tmp_path):
     src = images(tmp_path / "in", [f"i{n}.png" for n in range(30)])
     w = window(qapp, tmp_path)
+    analyze = w.fake.analyze
+    w.fake.analyze = lambda *a: (time.sleep(0.05), analyze(*a))[1]       # keeps the worker busy for ~1.5 s
     w.add_paths([str(src)])
     wait(qapp, lambda: w.worker is not None)
     w.toggle_pause(); assert w.worker.is_paused()
@@ -203,3 +206,80 @@ def test_settings_persist_and_widgets(qapp, tmp_path):
     opts = w2.tag_options()
     assert opts.strictness == "strict" and opts.max_tags == 8
     w2.close()
+
+def test_import_runs_in_background_in_batches(qapp, tmp_path, monkeypatch):
+    from memetagger.ui import workers
+    monkeypatch.setattr(workers.ImportWorker, "BATCH_SECONDS", 0.0)       # one batch per chunk of files
+    src = tmp_path / "in"
+    for d in range(5):
+        images(src / f"d{d}", [f"i{n}.png" for n in range(20)])
+    images(src / ".hidden", ["x.png"])
+    extra = images(tmp_path / "extra", ["e.png"])
+    w = window(qapp, tmp_path)
+    batches = []
+    w.add_paths([str(src)])
+    assert w.importer is not None                    # returns at once, the scan runs in its thread
+    w.importer.batch.connect(lambda items: batches.append(len(items)))
+    w.add_paths([str(extra), str(src / "d0")])        # while importing: queued, duplicates are dropped
+    wait(qapp, lambda: idle(w))
+    names = [r.item.src.relative_to(tmp_path).as_posix() for r in w.model.rows]
+    assert len(names) == 101 and names[-1] == "extra/e.png" and len(set(names)) == 101
+    assert names[:2] == ["in/d0/i0.png", "in/d0/i1.png"] and not any(".hidden" in n for n in names)
+    assert len(batches) > 1
+    w.close()
+
+
+def test_clear_and_stop_during_import(qapp, tmp_path, monkeypatch):
+    from memetagger.ui import workers
+    monkeypatch.setattr(workers.ImportWorker, "BATCH_SECONDS", 0.0)
+    src = tmp_path / "in"
+    for d in range(4):
+        images(src / f"d{d}", [f"i{n}.png" for n in range(40)])
+    real, made, gate = workers.org.make_item, [], threading.Event()
+
+    def gated(*a):                                   # the scan stalls after 40 files until the test lets it go
+        made.append(1)
+        if len(made) % 160 > 40:
+            gate.wait(5)
+        return real(*a)
+    monkeypatch.setattr(workers.org, "make_item", gated)
+    w = window(qapp, tmp_path)
+    w.add_paths([str(src)]); wait(qapp, lambda: w.model.rows)
+    importer = w.importer
+    gate.set(); w.clear(); gate.clear()
+    assert w.importer is None and importer.isFinished()
+    for _ in range(20):
+        qapp.processEvents(); time.sleep(0.01)
+    assert not w.model.rows                          # batches still in flight are ignored
+    made.clear()
+    w.add_paths([str(src)]); wait(qapp, lambda: w.model.rows)
+    w.stop_analysis(); gate.set(); wait(qapp, lambda: idle(w))
+    assert 0 < len(w.model.rows) < 160
+    w.close()
+
+
+def test_wrap_checkbox_wraps_and_toggles_on_text(qapp):
+    from PySide6.QtCore import QPoint
+    from PySide6.QtTest import QTest
+    from memetagger.ui.common import WrapCheckBox
+    cb = WrapCheckBox("Double-check doubtful franchise and character guesses with one extra question")
+    assert cb.heightForWidth(120) > cb.heightForWidth(900)
+    cb.resize(160, cb.heightForWidth(160)); cb.show(); qapp.processEvents()
+    QTest.mouseClick(cb, Qt.MouseButton.LeftButton, pos=QPoint(140, cb.height() // 2))
+    assert cb.isChecked() and cb.text().startswith("Double-check")
+    cb.close()
+
+
+def test_thumbnail_delegate_fits_the_whole_image(qapp):
+    from PySide6.QtCore import QRect
+    from PySide6.QtGui import QColor, QImage, QPainter, QPixmap, QStandardItem, QStandardItemModel
+    from PySide6.QtWidgets import QStyleOptionViewItem
+    from memetagger.ui.widgets import ThumbDelegate
+    pix = QPixmap(40, 160); pix.fill(QColor("#ff0000"))
+    m = QStandardItemModel(1, 1); it = QStandardItem(); it.setData(pix, Qt.ItemDataRole.DecorationRole); m.setItem(0, 0, it)
+    img = QImage(88, 84, QImage.Format.Format_ARGB32); img.fill(QColor("#000000"))
+    opt = QStyleOptionViewItem(); opt.rect = QRect(0, 0, 88, 84)
+    p = QPainter(img); ThumbDelegate().paint(p, opt, m.index(0, 0)); p.end()
+    red = lambda x, y: QColor(img.pixel(x, y)).red() > 200
+    assert red(44, 8) and red(44, 76)                # top and bottom of the tall image are both visible
+    assert not red(20, 42) and not red(68, 42)       # scaled down to fit, not stretched to the cell width

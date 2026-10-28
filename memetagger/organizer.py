@@ -5,6 +5,7 @@ created once at least `min_count` images share the value, and an existing folder
 place whose tags did not change are left alone, so the library stays stable as it grows; rebuild=True re-plans it all."""
 from __future__ import annotations
 import json
+import os
 import shutil
 import time
 from collections import defaultdict
@@ -52,23 +53,45 @@ def make_item(path: Path, root: Path, read_meta: bool = False) -> Item:
     return it
 
 
-def collect(paths, read_meta: bool = False) -> list[Item]:
-    """Files and/or folders (recursive) -> Items. For a folder, root = that folder; hidden folders are skipped."""
-    items, seen = [], set()
+def iter_files(paths, stop=None):
+    """(file, root) for files and folders (recursive, hidden entries skipped) in sorted path order, one directory at a
+    time, so a huge folder can be streamed. stop() is polled between directories."""
+    seen = set()
+
+    def walk(d: Path):
+        try:
+            with os.scandir(d) as it:
+                entries = sorted((e for e in it if not e.name.startswith(".")), key=lambda e: e.name)
+        except OSError:
+            return
+        for e in entries:
+            try:
+                if e.is_dir(follow_symlinks=False):
+                    if stop is None or not stop():
+                        yield from walk(Path(e.path))
+                elif e.is_file() and os.path.splitext(e.name)[1].lower() in IMAGE_EXT:
+                    yield Path(e.path)
+            except OSError:
+                continue
+
     for p in map(Path, paths):
+        if stop is not None and stop():
+            return
         if p.is_dir():
-            root = p
-            files = sorted(f for f in p.rglob("*") if f.is_file() and f.suffix.lower() in IMAGE_EXT
-                           and not any(x.startswith(".") for x in f.relative_to(p).parts))
+            root, files = p, walk(p)
         elif p.is_file() and p.suffix.lower() in IMAGE_EXT:
             root, files = p.parent, [p]
         else:
             continue
         for f in files:
             if f not in seen:
-                seen.add(f); items.append(make_item(f, root, read_meta))
-    return items
+                seen.add(f)
+                yield f, root
 
+
+def collect(paths, read_meta: bool = False) -> list[Item]:
+    """Files and/or folders (recursive) -> Items. For a folder, root = that folder; hidden folders are skipped."""
+    return [make_item(f, root, read_meta) for f, root in iter_files(paths)]
 
 def item_context(it: Item) -> dict:
     """Hints from the original file name and the folders the file was in."""

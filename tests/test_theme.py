@@ -2,7 +2,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from memetagger.theme import THEMES, blend, build_style, contrast
+from memetagger.theme import THEMES, blend, build_style, contrast, make_icons
 
 
 def test_contrast():
@@ -29,17 +29,21 @@ def test_contrast():
         assert c("handle", "card") >= 2.8, (name, "scrollbar handle")
 
 
-def test_stylesheet_is_self_contained():
+def test_stylesheet_is_self_contained(tmp_path):
     for name, t in THEMES.items():
-        css = build_style(t, "/tmp/check.png")
+        icons = make_icons(tmp_path, t)
+        assert all(icons.values()) and all(Path(p).exists() for p in icons.values())
+        css = build_style(t, {**icons, "check": "/tmp/check.png"})
         assert "palette(" not in css, "стили не должны зависеть от системных ролей палитры"
         assert "{t[" not in css and "{{" not in css
         for sel in ("QTabBar::tab:selected", "QTabBar::tab {", "QCheckBox::indicator:checked", "QMenu::item:selected", "QToolTip",
                     'QLabel#badge[state="ok"]', 'QLabel#hint[state="warn"]', "QPushButton#primary"):
             assert sel in css, sel
-        assert 'url("/tmp/check.png")' in css
+        assert 'url("/tmp/check.png")' in css and f'url("{icons["down"]}")' in css
+        assert "QComboBox::drop-down" in css and "border-top-right-radius" in css
         assert css.count("{") == css.count("}")
 
 
 if __name__ == "__main__":
-    test_contrast(); test_stylesheet_is_self_contained(); print("OK theme")
+    import tempfile
+    test_contrast(); test_stylesheet_is_self_contained(Path(tempfile.mkdtemp())); print("OK theme")

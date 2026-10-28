@@ -1,10 +1,11 @@
-"""Reusable widgets: flow layout, tag chips, tag input with completion, tag-chip table delegate, scaled image."""
+"""Reusable widgets: flow layout, tag chips, tag input with completion, table delegates (tag chips, thumbnails),
+scaled image."""
 from __future__ import annotations
 import re
-from PySide6.QtCore import QPoint, QRect, QSize, QStringListModel, Qt, Signal
-from PySide6.QtGui import QAction, QColor, QFontMetrics, QPainter, QPixmap
+from PySide6.QtCore import QPoint, QRect, QRectF, QSize, QStringListModel, Qt, Signal
+from PySide6.QtGui import QAction, QColor, QFontMetrics, QIcon, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (QCompleter, QFrame, QHBoxLayout, QLabel, QLayout, QLineEdit, QMenu, QSizePolicy,
-                               QStyle, QStyledItemDelegate, QToolButton)
+                               QStyle, QStyledItemDelegate, QStyleOptionViewItem, QToolButton)
 from ..tags import KIND_LABELS, KINDS
 from .common import kind_color, theme
 
@@ -211,6 +212,30 @@ class TagsDelegate(QStyledItemDelegate):
     def setModelData(self, editor, model, idx):
         model.setData(idx, editor.text(), Qt.ItemDataRole.EditRole)
 
+
+class ThumbDelegate(QStyledItemDelegate):
+    """Draws the whole thumbnail scaled into the cell (the default icon painting crops it to the icon box)."""
+    PAD = 5
+
+    def paint(self, p: QPainter, opt, idx):
+        self.initStyleOption(opt, idx)
+        pix = idx.data(Qt.ItemDataRole.DecorationRole)
+        opt.icon, opt.text = QIcon(), ""
+        opt.features &= ~QStyleOptionViewItem.ViewItemFeature.HasDecoration
+        style = opt.widget.style() if opt.widget else None
+        if style:
+            style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, p, opt.widget)
+        if not isinstance(pix, QPixmap) or pix.isNull():
+            return
+        box = opt.rect.adjusted(self.PAD, self.PAD, -self.PAD, -self.PAD)
+        size = pix.size().scaled(box.size(), Qt.AspectRatioMode.KeepAspectRatio)
+        target = QRect(QPoint(box.x() + (box.width() - size.width()) // 2, box.y() + (box.height() - size.height()) // 2), size)
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing); p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        path = QPainterPath(); path.addRoundedRect(QRectF(target), 4, 4)
+        p.setClipPath(path)
+        p.drawPixmap(target, pix)
+        p.restore()
 
 class ImageView(QLabel):
     """Shows a pixmap scaled to fit, keeping the aspect ratio."""

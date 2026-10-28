@@ -34,6 +34,22 @@ python run.py [файлы/папки]
 `python -m memetagger.debug ~/test_images --out report.md` (сравнение моделей: `--models qwen3-vl:8b,gemma3:12b`;
 также `--strictness`, `--wd-model`, `--wd-device`, `--no-tags/--no-text/--no-description`).
 
+## Свои модели
+**Vision-модель.** В поле Model можно вписать любую модель Ollama, в том числе GGUF прямо с Hugging Face:
+`hf.co/<owner>/<repo>:Q4_K_M` (кнопка «Download» делает `ollama pull`). Модель должна уметь принимать картинки
+(vision); текстовые модели скрываются из списка. Свой GGUF с диска подключается через `Modelfile` и `ollama create`.
+
+**Распознавание персонажей.** Character recognition → Model → «Custom model…», затем одно из:
+- `owner/repo` — репозиторий Hugging Face; если ONNX-файлов несколько, укажите нужный: `owner/repo:model_fp16.onnx`;
+- путь к папке (кнопка «…») или к конкретному `.onnx` файлу.
+
+Подходит любой тегер в формате WD: ONNX-модель + `selected_tags.csv` с колонками `name` и `category`
+(категории Danbooru: 0 — общие, 3 — копирайт, 4 — персонажи). Раскладка входа (NHWC/NCHW) и размер определяются по
+модели; для NCHW по умолчанию RGB, 0..1, mean/std 0.5. Необязательный `preprocess.json` задаёт размер, цвет полей и
+нормализацию. Внешние веса (`model.onnx.data`) скачиваются вместе с моделью. Закрытые/gated репозитории: переменная
+окружения `HF_TOKEN`. Файлы кладутся в `~/.local/share/memetagger/models/custom/`. Пример — PixAI Tagger v1.0
+(8 тыс. персонажей): `Mexes/pixai-tagger-v1.0-onnx-fp32-fp16-int8:model_fp16.onnx` (≈1 GB, для GPU).
+В отладке: `python -m memetagger.debug ~/memes --wd-model owner/repo --out report.md`.
 ## Папки
 Настройки → Library → Folders. Уровни задаются видами тегов: `franchise > character` (по умолчанию),
 `franchise|meme_format > character`, `medium > franchise > character` или пусто (только переименование).
@@ -58,6 +74,8 @@ Dolphin/Baloo, Lightroom. При повторном добавлении фай�
 - Библиотека тегов: все теги с видом и числом файлов. Переименование и слияние (`yui_hirasawa` + `hirasawa_yui`),
   смена вида и удаление, по желанию сразу в файлах библиотеки (с записью в журнал Undo).
 - Undo отменяет последний Apply, включая правки из библиотеки тегов.
+- Большие папки сканируются в фоне: строки появляются партиями, в строке состояния виден счётчик найденных файлов,
+  «Stop» прерывает импорт.
 
 ## Конфигурация
 `~/.config/memetagger/`: `folder_hints.json` (папка → теги), `seed_tags.txt` (`тег` или `тег | вид`),

@@ -53,7 +53,8 @@ def main(argv=None):
     ap.add_argument("--models", default="", help="comma-separated: comparison mode")
     ap.add_argument("--host", default="")
     ap.add_argument("--out", default="")
-    ap.add_argument("--wd-model", default=DEFAULT_WD, choices=tuple(WD_MODELS))
+    ap.add_argument("--wd-model", default=DEFAULT_WD,
+                    help=f"{', '.join(WD_MODELS)}, a Hugging Face repo (owner/name[:file.onnx]) or a folder")
     ap.add_argument("--wd-device", default="auto", choices=("auto", "cuda", "cpu"))
     ap.add_argument("--strictness", default="balanced", choices=("lenient", "balanced", "strict"))
     for flag in ("ocr", "wd", "verify", "tags", "text", "description"):

@@ -1,11 +1,12 @@
 """Shared UI helpers: theme application, settings with defaults, background tasks, small widgets."""
 from __future__ import annotations
 from PIL import Image
-from PySide6.QtCore import QObject, QSettings, Qt, QThread, Signal
+from PySide6.QtCore import QObject, QSettings, QSize, Qt, QThread, Signal
 from PySide6.QtGui import QColor, QImage, QPalette
-from PySide6.QtWidgets import QApplication, QFrame, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (QApplication, QCheckBox, QFrame, QHBoxLayout, QLabel, QSizePolicy, QStyle, QVBoxLayout,
+                               QWidget)
 from ..paths import user_data_dir
-from ..theme import KIND_COLORS, THEMES, build_style, make_check_icon
+from ..theme import KIND_COLORS, THEMES, build_style, make_icons
 
 _SYSTEM_DARK = [False]
 
@@ -50,7 +51,7 @@ def apply_theme(app, mode: str) -> dict:
     (system palette roles made some widgets blend into the background on several desktop themes)."""
     t = current_theme(mode)
     app.setPalette(make_palette(t))
-    app.setStyleSheet(build_style(t, make_check_icon(user_data_dir() / "ui" / "check.png")))
+    app.setStyleSheet(build_style(t, make_icons(user_data_dir() / "ui", t)))
     app.setProperty("mt_theme", t)
     return t
 
@@ -84,8 +85,74 @@ def fmt_eta(sec: float) -> str:
     return f"{sec // 60}m {sec % 60:02d}s" if sec < 3600 else f"{sec // 3600}h {sec % 3600 // 60:02d}m"
 
 
+class WrapLabel(QLabel):
+    """Word-wrapped label that always reserves the height its text needs at its current width. Plain word-wrapped
+    labels in form layouts get a height computed for another width, and the last lines are cut off."""
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(text, parent)
+        self.setWordWrap(True)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+
+    def setText(self, text):
+        super().setText(text); self._fit()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e); self._fit()
+
+    def minimumSizeHint(self):
+        return QSize(40, super().minimumSizeHint().height())
+
+    def _fit(self):
+        if self.width() > 0:
+            h = self.heightForWidth(self.width()) if self.text() else 0
+            if h >= 0 and h != self.minimumHeight():
+                self.setMinimumHeight(h)
+
+
+class WrapCheckBox(QCheckBox):
+    """Checkbox whose text wraps onto more lines instead of being cut off in a narrow panel."""
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self.label = WrapLabel(text)
+        self.label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(self._indent(), 0, 0, 0)
+        lay.addWidget(self.label)
+        sp = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum); sp.setHeightForWidth(True)
+        self.setSizePolicy(sp)
+
+    def _indent(self) -> int:
+        st = self.style()
+        return st.pixelMetric(QStyle.PixelMetric.PM_IndicatorWidth, None, self) + \
+            st.pixelMetric(QStyle.PixelMetric.PM_CheckBoxLabelSpacing, None, self) + 4
+
+    def setText(self, text):
+        self.label.setText(text)
+
+    def text(self):
+        return self.label.text()
+
+    def hitButton(self, pos):
+        return self.rect().contains(pos)
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, w):
+        return max(20, self.label.heightForWidth(max(1, w - self._indent())))
+
+    def sizeHint(self):
+        s = self.label.sizeHint()
+        return QSize(s.width() + self._indent(), max(20, s.height()))
+
+    def minimumSizeHint(self):
+        return QSize(self._indent() + 40, 20)
+
 def hint(text: str = "", wrap: bool = True) -> QLabel:
-    lab = QLabel(text); lab.setObjectName("hint"); lab.setWordWrap(wrap)
+    lab = WrapLabel(text) if wrap else QLabel(text)
+    lab.setObjectName("hint")
     return lab
 
 
@@ -103,7 +170,7 @@ class Settings:
     DEFAULTS = {
         # analysis
         "engine": "auto", "model": "qwen3-vl:8b", "host": "", "unload_exit": True,
-        "wd": True, "wd_model": "eva02-large", "wd_device": "auto",
+        "wd": True, "wd_model": "eva02-large", "wd_custom": "", "wd_device": "auto",
         "gen_tags": True, "gen_text": True, "gen_desc": True, "ocr": True, "verify": True,
         "strictness": "balanced", "max_tags": 8, "show_vocab": False,
         "cthr": 0.30, "gthr": 0.35, "fallback": True,

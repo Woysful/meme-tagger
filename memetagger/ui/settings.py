@@ -4,21 +4,20 @@ import re
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QLayout, QLineEdit,
                                QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QTabWidget, QVBoxLayout, QWidget)
-from ..models import WD_MODELS
+from ..models import CUSTOM, DEFAULT_WD, WD_MODELS
 from ..naming import PRESETS, render_filename, validate
 from ..organizer import LEVEL_PRESETS, parse_levels
 from ..tags import KIND_LABELS
-from .common import Settings, hint, set_state
+from .common import Settings, WrapCheckBox, hint, set_state, vbox
 
 CONFIG_FILES = [("folder_hints.json", "Folder name → tags"), ("seed_tags.txt", "Starting tag vocabulary"),
                 ("aliases.json", "Character → franchise aliases"), ("vocab.txt", "Classic engine labels")]
-STRICTNESS = [("Lenient: more tags, more mistakes", "lenient"), ("Balanced (recommended)", "balanced"),
-              ("Strict: only confirmed franchises/characters", "strict")]
+STRICTNESS = [("Lenient", "lenient"), ("Balanced (recommended)", "balanced"), ("Strict", "strict")]
 STRICT_HINT = {
-    "lenient": "Accepts the vision model's franchise/character guesses unless it is unsure itself.",
+    "lenient": "More tags, more mistakes. Accepts the vision model's franchise/character guesses unless it is unsure itself.",
     "balanced": "Confident guesses are kept, medium ones are double-checked with a short extra question, "
                 "and WD14 or text on the image counts as confirmation.",
-    "strict": "Even confident guesses are double-checked; unconfirmed low-confidence guesses are dropped.",
+    "strict": "Only confirmed franchises and characters. Even confident guesses are double-checked; unconfirmed low-confidence guesses are dropped.",
 }
 
 
@@ -66,7 +65,13 @@ def combo(options) -> QComboBox:
     c = shrinkable(QComboBox())
     for label, key in options:
         c.addItem(label, key)
+        c.setItemData(c.count() - 1, label, Qt.ItemDataRole.ToolTipRole)
+    c.view().setMinimumWidth(c.view().sizeHintForColumn(0) + 32)      # the open list shows full texts
     return c
+
+
+def check(text: str) -> WrapCheckBox:
+    return WrapCheckBox(text)
 
 
 class SettingsPanel(QWidget):
@@ -83,7 +88,7 @@ class SettingsPanel(QWidget):
         lay = QVBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0); lay.addWidget(self.tabs)
         self.tabs.setCurrentIndex(max(0, min(2, self.s.get("tab"))))
         self.tabs.currentChanged.connect(lambda i: self.s.set("tab", i))
-        self.on_engine(); self.on_strictness(); self.on_levels(); self.update_template()
+        self.on_engine(); self.on_strictness(); self.on_levels(); self.update_template(); self.on_wd()
 
     # ---- binding ----
     def bind(self, w, key: str, on_edit_finished: bool = False):
@@ -109,7 +114,7 @@ class SettingsPanel(QWidget):
     # ---- tabs ----
     def _analysis_tab(self):
         b = self.bind
-        self.engine = b(combo([("Auto: vision model, else classic", "auto"), ("Vision model only (best)", "vlm"),
+        self.engine = b(combo([("Auto (Ollama, else classic)", "auto"), ("Vision model only", "vlm"),
                                ("Classic only (no Ollama)", "classic")]), "engine")
         self.engine.currentIndexChanged.connect(self.on_engine)
         self.model = shrinkable(QComboBox()); self.model.setEditable(True); b(self.model, "model")
@@ -125,7 +130,7 @@ class SettingsPanel(QWidget):
         self.host.setPlaceholderText("default: $OLLAMA_HOST or 127.0.0.1:11434")
         self.test_btn = QPushButton("Test")
         self.gpu_label = hint("GPU: —")
-        self.unload_exit = b(QCheckBox("Free GPU memory when closing the app"), "unload_exit")
+        self.unload_exit = b(check("Free GPU memory when closing the app"), "unload_exit")
         f = form()
         f.addRow("Engine", self.engine)
         f.addRow("Model", hrow(self.model, self.refresh_btn))
@@ -136,20 +141,27 @@ class SettingsPanel(QWidget):
         f.addRow(self.gpu_label); f.addRow(self.unload_exit)
         vlm = group("Vision model (Ollama)", f)
 
-        self.wd = b(QCheckBox("Recognize anime characters with WD14"), "wd")
-        self.wd_model = b(combo([(desc, key) for key, (_repo, desc) in WD_MODELS.items()]), "wd_model")
+        self.wd = b(check("Recognize anime characters with WD14"), "wd")
+        self.wd_model = b(combo([(label, key) for key, (_repo, label) in WD_MODELS.items()] + [("Custom model…", CUSTOM)]),
+                          "wd_model")
+        self.wd_custom = b(QLineEdit(), "wd_custom", on_edit_finished=True)
+        self.wd_custom.setPlaceholderText("owner/repo  or  owner/repo:file.onnx  or a folder")
+        self.wd_custom_btn = QPushButton("…"); self.wd_custom_btn.setToolTip("Choose a folder with model.onnx and selected_tags.csv")
+        self.wd_custom_box = vbox(hrow(self.wd_custom, self.wd_custom_btn), hint(
+            "Any ONNX tagger in the WD format from Hugging Face or a local folder: model.onnx + selected_tags.csv "
+            "(categories 4 = character, 3 = copyright). Optional preprocess.json. Gated repos need HF_TOKEN."), spacing=4)
         self.wd_device = b(combo([("Auto: GPU if available", "auto"), ("GPU (CUDA)", "cuda"), ("CPU", "cpu")]), "wd_device")
-        self.wd.toggled.connect(lambda on: (self.wd_model.setEnabled(on), self.wd_device.setEnabled(on)))
-        self.wd_model.setEnabled(self.wd.isChecked()); self.wd_device.setEnabled(self.wd.isChecked())
+        self.wd.toggled.connect(self.on_wd)
+        self.wd_model.currentIndexChanged.connect(self.on_wd)
         f = form()
-        f.addRow(self.wd); f.addRow("Model", self.wd_model); f.addRow("Device", self.wd_device)
+        f.addRow(self.wd); f.addRow("Model", self.wd_model); f.addRow(self.wd_custom_box); f.addRow("Device", self.wd_device)
         f.addRow(hint("Its character guesses with probabilities are given to the vision model and confirm its answers. "
                       "The GPU needs onnxruntime-gpu; the model is downloaded once."))
         wd = group("Character recognition", f)
 
-        self.gen_tags = b(QCheckBox("Tags"), "gen_tags")
-        self.gen_text = b(QCheckBox("Text on the image (for file names)"), "gen_text")
-        self.gen_desc = b(QCheckBox("Scene description"), "gen_desc")
+        self.gen_tags = b(check("Tags"), "gen_tags")
+        self.gen_text = b(check("Text on the image (for file names)"), "gen_text")
+        self.gen_desc = b(check("Scene description"), "gen_desc")
         f = form()
         for w in (self.gen_tags, self.gen_text, self.gen_desc):
             f.addRow(w)
@@ -159,11 +171,11 @@ class SettingsPanel(QWidget):
         self.strictness = b(combo(STRICTNESS), "strictness")
         self.strictness.currentIndexChanged.connect(self.on_strictness)
         self.strict_hint = hint("")
-        self.verify = b(QCheckBox("Double-check doubtful franchise/character guesses"), "verify")
+        self.verify = b(check("Double-check doubtful franchise/character guesses"), "verify")
         self.verify.setToolTip("One short extra question per image, only when something needs checking.")
         self.max_tags = b(QSpinBox(), "max_tags"); self.max_tags.setRange(3, 20)
-        self.ocr = b(QCheckBox("Read text on images (OCR) as a hint"), "ocr")
-        self.show_vocab = b(QCheckBox("Show my frequent tags to the model"), "show_vocab")
+        self.ocr = b(check("Read text on images (OCR) as a hint"), "ocr")
+        self.show_vocab = b(check("Show my frequent tags to the model"), "show_vocab")
         self.show_vocab.setToolTip("More consistent tag names, but the model may pick a known tag that does not fit.")
         f = form()
         f.addRow("Strictness", self.strictness); f.addRow(self.strict_hint)
@@ -172,7 +184,7 @@ class SettingsPanel(QWidget):
 
         self.cthr = b(QDoubleSpinBox(), "cthr"); self.cthr.setRange(0.05, 0.95); self.cthr.setSingleStep(0.05)
         self.gthr = b(QDoubleSpinBox(), "gthr"); self.gthr.setRange(0.10, 0.95); self.gthr.setSingleStep(0.05)
-        self.fallback = b(QCheckBox("Always assign at least one tag"), "fallback")
+        self.fallback = b(check("Always assign at least one tag"), "fallback")
         f = form()
         f.addRow("Concept confidence", self.cthr); f.addRow("WD14 tag confidence", self.gthr); f.addRow(self.fallback)
         f.addRow(hint("Higher = fewer, more certain tags."))
@@ -183,7 +195,7 @@ class SettingsPanel(QWidget):
         b = self.bind
         self.out = b(QLineEdit(), "out"); self.out.setPlaceholderText("empty: sort inside the added folder")
         self.out_btn = QPushButton("…"); self.out_btn.setToolTip("Choose the library folder")
-        self.copy = b(QCheckBox("Copy files into the library instead of moving"), "copy")
+        self.copy = b(check("Copy files into the library instead of moving"), "copy")
         f = form()
         f.addRow("Library folder", hrow(self.out, self.out_btn)); f.addRow(self.copy)
         lib = group("Library", f)
@@ -193,7 +205,7 @@ class SettingsPanel(QWidget):
         self.levels_hint = hint("")
         self.min_count = b(QSpinBox(), "min_count"); self.min_count.setRange(1, 500)
         self.min_count.setSuffix(" images")
-        self.gather = b(QCheckBox("Move older files into a folder once it appears"), "gather")
+        self.gather = b(check("Move older files into a folder once it appears"), "gather")
         self.gather.setToolTip("When a franchise reaches the threshold, files of it waiting in the parent folder join "
                                "the new folder. Other files that are already in place are never touched.")
         self.level_preset.currentIndexChanged.connect(self.on_level_preset)
@@ -212,7 +224,7 @@ class SettingsPanel(QWidget):
                         "Fallback {text|original} · limit {text:40} {tags:3} · optional part < - {text}>")
         self.text_max = b(QSpinBox(), "text_max"); self.text_max.setRange(15, 120)
         self.desc_max = b(QSpinBox(), "desc_max"); self.desc_max.setRange(15, 160)
-        self.limit_model = b(QCheckBox("Ask the model for these lengths (faster answers)"), "limit_model")
+        self.limit_model = b(check("Ask the model for these lengths (faster answers)"), "limit_model")
         self.desc_lang = b(combo([("English", "English"), ("Русский", "Russian"), ("Українська", "Ukrainian")]), "desc_lang")
         self.name_preset.currentIndexChanged.connect(self.on_name_preset)
         self.template.textChanged.connect(self.update_template)
@@ -225,7 +237,7 @@ class SettingsPanel(QWidget):
         f.addRow(self.limit_model); f.addRow("Description language", self.desc_lang)
         names = group("File names", f)
 
-        self.metadata = b(combo([("Write into the file (XMP)", "embed"), ("Sidecar file (.xmp)", "sidecar"), ("Off", "off")]),
+        self.metadata = b(combo([("Into the file (XMP)", "embed"), ("Sidecar file (.xmp)", "sidecar"), ("Off", "off")]),
                           "metadata")
         f = form()
         f.addRow("Tags & description", self.metadata)
@@ -236,10 +248,10 @@ class SettingsPanel(QWidget):
 
     def _tags_tab(self):
         b = self.bind
-        self.skip = b(QCheckBox("Skip files that already have [tags] in the name"), "skip")
+        self.skip = b(check("Skip files that already have [tags] in the name"), "skip")
         self.banned = b(QLineEdit(), "banned", on_edit_finished=True)
         self.banned.setPlaceholderText("e.g.  photo  text_meme")
-        self.folder_tags_all = b(QCheckBox("Folder names may add any kind of tag"), "folder_tags_all")
+        self.folder_tags_all = b(check("Folder names may add any kind of tag"), "folder_tags_all")
         self.folder_tags_all.setToolTip("Off: folder hints only add franchises and characters. On: also themes like "
                                         "'Sad' → sad, which then lands on every file of that folder.")
         f = form()
@@ -266,6 +278,18 @@ class SettingsPanel(QWidget):
         return page(rules, lib, cfg)
 
     # ---- dependent widgets ----
+    def on_wd(self, *_):
+        on = self.wd.isChecked()
+        for w in (self.wd_model, self.wd_device, self.wd_custom_box):
+            w.setEnabled(on)
+        self.wd_custom_box.setVisible(self.wd_model.currentData() == CUSTOM)
+
+    def wd_spec(self) -> str:
+        """Registry key, or the custom repo/folder (the default model while the custom field is empty)."""
+        if self.wd_model.currentData() == CUSTOM:
+            return self.wd_custom.text().strip() or DEFAULT_WD
+        return self.wd_model.currentData()
+
     def on_engine(self, *_):
         self.set_classic_visible(self.engine.currentData() == "classic")
 

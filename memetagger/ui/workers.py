@@ -1,12 +1,15 @@
-"""Background threads: image analysis (pipelined) and `ollama pull`."""
+"""Background threads: importing files, image analysis (pipelined) and `ollama pull`."""
 from __future__ import annotations
+import itertools
 import threading
+import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
+from .. import organizer as org
 from ..engine import Engine, EngineConfig, TagOptions, reset_shared
 from ..imaging import thumbnail_rgba
 from ..vlm import OllamaVLM, VLMError
@@ -38,6 +41,55 @@ def drop_engine():
     _engine["engine"] = _engine["cfg"] = None
     reset_shared()
 
+
+class ImportWorker(QThread):
+    """Walks dropped folders and reads the metadata of already tagged files off the GUI thread. Items arrive in batches,
+    so the list fills up while a big folder is still being scanned. Paths can be added while it runs."""
+    batch = Signal(list)              # [Item]
+    progress = Signal(int, str)       # files found so far, folder being scanned
+
+    BATCH_SECONDS = 0.15
+    THREADS = 4
+    YIELD = 0.005           # per chunk: lets the GUI thread take the GIL, otherwise the window stutters
+
+    def __init__(self, paths, read_meta: bool):
+        super().__init__()
+        self.read_meta = read_meta
+        self._paths, self._lock = deque(paths), threading.Lock()
+        self.found = 0
+
+    def add(self, paths):
+        with self._lock:
+            self._paths.extend(paths)
+
+    def leftover(self) -> list:
+        with self._lock:
+            return list(self._paths)
+
+    def cancel(self):
+        self.requestInterruption()
+
+    def _take(self):
+        with self._lock:
+            return self._paths.popleft() if self._paths else None
+
+    def run(self):
+        stop = self.isInterruptionRequested
+        make = lambda fr: org.make_item(fr[0], fr[1], self.read_meta)
+        buf, last = [], time.monotonic()
+        with ThreadPoolExecutor(self.THREADS, thread_name_prefix="import") as pool:     # metadata reads are I/O bound
+            while not stop() and (p := self._take()) is not None:
+                files = org.iter_files([p], stop)
+                while not stop() and (chunk := list(itertools.islice(files, 32))):
+                    buf += pool.map(make, chunk) if self.read_meta else map(make, chunk)
+                    self.found += len(chunk)
+                    time.sleep(self.YIELD)
+                    if time.monotonic() - last >= self.BATCH_SECONDS:
+                        self.batch.emit(buf); self.progress.emit(self.found, str(chunk[-1][0].parent))
+                        buf, last = [], time.monotonic()
+        if buf and not stop():
+            self.batch.emit(buf)
+        self.progress.emit(self.found, "")
 
 class AnalysisWorker(QThread):
     """Takes jobs from a queue that can grow while it runs. While the vision model answers for one image, the next
@@ -133,7 +185,9 @@ class AnalysisWorker(QThread):
                     if err:
                         self.row_error.emit(job.rid, err, thumb); continue
                     if prep is None:
-                        self.row_done.emit(job.rid, None, thumb); continue
+                        self.row_done.emit(job.rid, None, thumb)
+                        time.sleep(0.001)               # thumbnail-only rows come fast: give the GUI the GIL
+                        continue
                     try:
                         self.row_done.emit(job.rid, self.engine.analyze(prep, job.context, self.opts), thumb)
                     except Exception as e:
