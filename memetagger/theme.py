@@ -1,7 +1,11 @@
-"""Цвета и QSS без зависимости от Qt (чтобы контраст можно было проверять тестами).
-Никаких palette(...)-ролей в стилях: все цвета заданы явно, иначе на некоторых системных темах элементы сливаются с фоном."""
+"""Colors and QSS without Qt imports (so contrast can be checked by tests). No palette(...) roles in the stylesheet:
+every color is explicit, otherwise widgets blend into the background on some system themes."""
 from __future__ import annotations
 from pathlib import Path
+
+# Tag kinds: solid dots/borders; chip backgrounds use the same colors at low alpha, so both themes stay readable.
+KIND_COLORS = {"character": "#e0607e", "franchise": "#4f86e8", "meme_format": "#e39a2d", "medium": "#9b7fd6",
+               "subject": "#2fae7f", "theme": "#c464c9", "other": "#8a8fa8"}
 
 THEMES = {
     "dark": dict(window="#1b1c23", card="#252733", alt="#2a2c3a", input="#1c1d26", raised="#34374a", hover="#40445c",
@@ -86,6 +90,7 @@ QPushButton#primary {{ background: {t['accent']}; color: {t['on_accent']}; borde
 QPushButton#primary:hover {{ background: {t['accent_hover']}; }}
 QPushButton#primary:disabled {{ background: {t['raised']}; color: {t['disabled']}; border-color: {t['raised']}; }}
 QPushButton#danger {{ color: {t['bad']}; }}
+QPushButton#danger:disabled {{ color: {t['disabled']}; }}
 QPushButton#flat {{ border: 1px solid transparent; background: transparent; padding: 7px 10px; }}
 QPushButton#flat:hover {{ background: {t['hover']}; }}
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{ padding: 5px 8px; border: 1px solid {t['border']}; border-radius: 6px;
@@ -99,9 +104,30 @@ QMenu::item {{ padding: 7px 24px 7px 14px; border-radius: 6px; }}
 QMenu::item:selected {{ background: {t['accent']}; color: {t['on_accent']}; }}
 QMenu::separator {{ height: 1px; background: {t['border']}; margin: 6px 8px; }}
 QToolTip {{ background: {t['card']}; color: {t['text']}; border: 1px solid {t['border']}; padding: 6px; }}
-QTableWidget {{ border: none; background: {t['card']}; alternate-background-color: {t['alt']}; color: {t['text']};
-    selection-background-color: {t['sel']}; selection-color: {t['text']}; outline: 0; }}
-QTableWidget::item {{ padding: 4px 8px; }}
+QTableView, QTableWidget, QListView, QTreeView {{ border: none; background: {t['card']}; alternate-background-color: {t['alt']};
+    color: {t['text']}; selection-background-color: {t['sel']}; selection-color: {t['text']}; outline: 0; }}
+QTableView::item, QTableWidget::item {{ padding: 4px 8px; }}
+QAbstractItemView {{ background: {t['card']}; color: {t['text']}; selection-background-color: {t['accent']};
+    selection-color: {t['on_accent']}; }}
+QPlainTextEdit, QTextEdit {{ padding: 4px 6px; border: 1px solid {t['border']}; border-radius: 6px; background: {t['input']};
+    color: {t['text']}; selection-background-color: {t['accent']}; selection-color: {t['on_accent']}; }}
+QPlainTextEdit:focus, QTextEdit:focus {{ border: 1px solid {t['accent']}; }}
+QGroupBox {{ border: 1px solid {t['border']}; border-radius: 10px; margin-top: 18px; padding: 14px 10px 10px 10px;
+    color: {t['text']}; font-weight: 600; background: transparent; }}
+QGroupBox::title {{ subcontrol-origin: margin; subcontrol-position: top left; left: 12px; padding: 0 6px; color: {t['muted']}; }}
+QGroupBox QLabel, QGroupBox QCheckBox {{ font-weight: 400; }}
+QScrollArea {{ border: none; background: transparent; }}
+QScrollArea > QWidget > QWidget {{ background: transparent; }}
+QLabel#section {{ color: {t['muted']}; font-weight: 700; font-size: 12px; }}
+QLabel#filename {{ font-weight: 600; font-size: 14px; }}
+QLabel#image {{ background: {t['input']}; border: 1px solid {t['border']}; border-radius: 10px; }}
+QFrame#chip {{ border-radius: 11px; }}
+QFrame#chip QLabel {{ background: transparent; }}
+QToolButton {{ border: none; background: transparent; color: {t['muted']}; padding: 0 2px; }}
+QToolButton:hover {{ color: {t['bad']}; }}
+QPushButton#suggest {{ padding: 3px 10px; border-radius: 11px; border: 1px dashed {t['border']}; background: transparent; }}
+QPushButton#suggest:hover {{ background: {t['hover']}; }}
+QPushButton#toggle:checked {{ background: {t['hover']}; border-color: {t['accent']}; }}
 QHeaderView::section {{ background: {t['card']}; color: {t['muted']}; border: none; border-bottom: 1px solid {t['border']};
     padding: 8px; font-weight: 600; }}
 QProgressBar {{ border: none; border-radius: 4px; background: {t['track']}; max-height: 8px; min-height: 8px; }}
